@@ -1,0 +1,14 @@
+﻿@inherits LayoutComponentBase
+
+<div class="shell">
+    <header class="topbar">
+        <a class="brand" href="/">Devage</a>
+        <nav>
+            <NavLink href="/" Match="NavLinkMatch.All">Monitor</NavLink>
+        </nav>
+        <span class="muted">Live dashboard</span>
+    </header>
+    <main class="content">
+        @Body
+    </main>
+</div>

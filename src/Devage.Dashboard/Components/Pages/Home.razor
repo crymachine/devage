@@ -1,0 +1,243 @@
+﻿@page "/"
+@inject HostApiClient Api
+@implements IAsyncDisposable
+
+<PageTitle>Devage Monitor</PageTitle>
+
+<section class="hero-strip">
+    <div>
+        <h1>Agent monitor</h1>
+        <p class="lede">Live status from Devage.Host — agents, plans, confirmations, and action logs.</p>
+    </div>
+    <div class="health @(_hostOnline ? "ok" : "down")">
+        <span class="dot"></span>
+        @if (_hostOnline)
+        {
+            <span>Host online · @_health?.RunningAgents running · v@_health?.Version</span>
+        }
+        else
+        {
+            <span>Host unreachable — start Devage.Host on @_hostHint</span>
+        }
+    </div>
+</section>
+
+@if (_error is not null)
+{
+    <p class="banner warn">@_error</p>
+}
+
+<section class="panel">
+    <div class="panel-head">
+        <h2>Pending confirmations</h2>
+        <span class="muted">@_confirmations.Count waiting</span>
+    </div>
+    @if (_confirmations.Count == 0)
+    {
+        <p class="empty">No Important/Critical steps awaiting approval.</p>
+    }
+    else
+    {
+        <ul class="confirm-list">
+            @foreach (var c in _confirmations)
+            {
+                <li>
+                    <div>
+                        <strong>@c.StepTitle</strong>
+                        <span class="pill @c.DecisionClass.ToLowerInvariant()">@c.DecisionClass</span>
+                        <p class="muted">Agent @Short(c.AgentId) · step #@c.StepOrdinal · @c.Description</p>
+                        @if (!string.IsNullOrWhiteSpace(c.Justification))
+                        {
+                            <p>@c.Justification</p>
+                        }
+                    </div>
+                    <div class="actions">
+                        <button class="btn primary" @onclick="() => DecideAsync(c.StepId, true)">Approve</button>
+                        <button class="btn" @onclick="() => DecideAsync(c.StepId, false)">Deny</button>
+                    </div>
+                </li>
+            }
+        </ul>
+    }
+</section>
+
+<section class="panel">
+    <div class="panel-head">
+        <h2>Agents</h2>
+        <span class="muted">Refresh every @_pollSeconds s</span>
+    </div>
+    @if (_agents.Count == 0)
+    {
+        <p class="empty">No agents yet. Use <code>devage -born</code> then <code>devage -start</code>.</p>
+    }
+    else
+    {
+        <div class="table-wrap">
+            <table>
+                <thead>
+                    <tr>
+                        <th>Name</th>
+                        <th>Status</th>
+                        <th>Role</th>
+                        <th>Goal / plan</th>
+                        <th></th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var agent in _agents)
+                    {
+                        var status = _statuses.GetValueOrDefault(agent.Id);
+                        <tr>
+                            <td>
+                                <a href="/agents/@agent.Id">@agent.Name</a>
+                                <div class="tiny muted">@agent.Id</div>
+                            </td>
+                            <td><span class="pill status-@((status?.Status ?? agent.Status).ToLowerInvariant())">@(status?.Status ?? agent.Status)</span></td>
+                            <td>@agent.Role</td>
+                            <td>
+                                <div>@(status?.Goal ?? agent.Goal ?? "—")</div>
+                                @if (status?.ActivePlanTitle is not null)
+                                {
+                                    <div class="tiny muted">@status.ActivePlanTitle · step @(status.CurrentStepOrdinal) @status.CurrentStepStatus</div>
+                                }
+                            </td>
+                            <td class="row-actions">
+                                @if ((status?.Status ?? agent.Status) is "Born" or "Stopped")
+                                {
+                                    <button class="btn" @onclick="() => StartAsync(agent.Id.ToString())">Start</button>
+                                }
+                                @if ((status?.Status ?? agent.Status) == "Running")
+                                {
+                                    <button class="btn" @onclick="() => StopAsync(agent.Id.ToString())">Stop</button>
+                                }
+                                <a class="btn link" href="/agents/@agent.Id">Open</a>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</section>
+
+@code {
+    private const int _pollSeconds = 3;
+    private readonly string _hostHint = "http://127.0.0.1:5088";
+
+    private HostHealthDto? _health;
+    private bool _hostOnline;
+    private string? _error;
+    private List<AgentDto> _agents = [];
+    private Dictionary<Guid, AgentStatusDto> _statuses = new();
+    private List<PendingConfirmationDto> _confirmations = [];
+    private CancellationTokenSource? _cts;
+    private Task? _loop;
+
+    protected override Task OnInitializedAsync()
+    {
+        _cts = new CancellationTokenSource();
+        _loop = PollLoopAsync(_cts.Token);
+        return Task.CompletedTask;
+    }
+
+    private async Task PollLoopAsync(CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(_pollSeconds));
+        await RefreshAsync(cancellationToken);
+        try
+        {
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                await RefreshAsync(cancellationToken);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // shutting down
+        }
+    }
+
+    private async Task RefreshAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            _health = await Api.GetHealthAsync(cancellationToken);
+            _hostOnline = _health?.Healthy == true;
+            if (!_hostOnline)
+            {
+                _error = "Cannot reach Devage.Host. Start it before using the dashboard.";
+                _agents = [];
+                _confirmations = [];
+                _statuses = new();
+            }
+            else
+            {
+                _error = null;
+                _agents = (await Api.ListAgentsAsync(cancellationToken)).ToList();
+                _confirmations = (await Api.ListConfirmationsAsync(cancellationToken: cancellationToken)).ToList();
+
+                var map = new Dictionary<Guid, AgentStatusDto>();
+                foreach (var agent in _agents)
+                {
+                    var status = await Api.GetStatusAsync(agent.Id.ToString(), cancellationToken);
+                    if (status is not null)
+                    {
+                        map[agent.Id] = status;
+                    }
+                }
+
+                _statuses = map;
+            }
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _hostOnline = false;
+            _error = ex.Message;
+        }
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task DecideAsync(Guid stepId, bool approved)
+    {
+        await Api.ResolveConfirmationAsync(stepId, approved);
+        if (_cts is not null)
+        {
+            await RefreshAsync(_cts.Token);
+        }
+    }
+
+    private async Task StartAsync(string id)
+    {
+        await Api.StartAgentAsync(id);
+        if (_cts is not null)
+        {
+            await RefreshAsync(_cts.Token);
+        }
+    }
+
+    private async Task StopAsync(string id)
+    {
+        await Api.StopAgentAsync(id);
+        if (_cts is not null)
+        {
+            await RefreshAsync(_cts.Token);
+        }
+    }
+
+    private static string Short(Guid id) => id.ToString("N")[..8];
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_cts is not null)
+        {
+            await _cts.CancelAsync();
+            _cts.Dispose();
+        }
+
+        if (_loop is not null)
+        {
+            try { await _loop; } catch (OperationCanceledException) { }
+        }
+    }
+}

@@ -1,0 +1,45 @@
+.shell {
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+}
+
+.topbar {
+    display: flex;
+    align-items: center;
+    gap: 1.25rem;
+    padding: 0.85rem 1.5rem;
+    border-bottom: 1px solid var(--line);
+    background: color-mix(in srgb, var(--panel) 88%, transparent);
+    backdrop-filter: blur(8px);
+    position: sticky;
+    top: 0;
+    z-index: 10;
+}
+
+.brand {
+    font-family: var(--font-display);
+    font-size: 1.35rem;
+    font-weight: 700;
+    letter-spacing: -0.02em;
+    color: var(--ink);
+    text-decoration: none;
+}
+
+.topbar nav a {
+    color: var(--muted);
+    text-decoration: none;
+    font-size: 0.95rem;
+}
+
+.topbar nav a.active {
+    color: var(--accent);
+}
+
+.content {
+    flex: 1;
+    padding: 1.5rem;
+    max-width: 1200px;
+    width: 100%;
+    margin: 0 auto;
+}

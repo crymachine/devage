@@ -1,0 +1,24 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Devage.Host</RootNamespace>
+  </PropertyGroup>
+  <ItemGroup>
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.14">
+      <PrivateAssets>all</PrivateAssets>
+      <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
+    </PackageReference>
+    <PackageReference Include="Microsoft.Extensions.Hosting.WindowsServices" Version="8.0.1" />
+  </ItemGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\Devage.Core\Devage.Core.csproj" />
+    <ProjectReference Include="..\Devage.Llm\Devage.Llm.csproj" />
+    <ProjectReference Include="..\Devage.Persistence\Devage.Persistence.csproj" />
+    <ProjectReference Include="..\Devage.Tools.Abstractions\Devage.Tools.Abstractions.csproj" />
+    <ProjectReference Include="..\Devage.Tools.Web\Devage.Tools.Web.csproj" />
+    <ProjectReference Include="..\Devage.Tools.Email\Devage.Tools.Email.csproj" />
+    <ProjectReference Include="..\Devage.Tools.Teams\Devage.Tools.Teams.csproj" />
+  </ItemGroup>
+</Project>

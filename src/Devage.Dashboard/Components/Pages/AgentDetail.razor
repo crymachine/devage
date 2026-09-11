@@ -1,0 +1,268 @@
+@page "/agents/{AgentId:guid}"
+@inject HostApiClient Api
+@implements IAsyncDisposable
+
+<PageTitle>@( _agent?.Name ?? "Agent" ) — Devage</PageTitle>
+
+<p><a href="/">← All agents</a></p>
+
+@if (_error is not null)
+{
+    <p class="banner warn">@_error</p>
+}
+
+@if (_agent is null && _error is null)
+{
+    <p class="muted">Loading…</p>
+}
+else if (_agent is not null)
+{
+    <section class="hero-strip">
+        <div>
+            <h1>@_agent.Name</h1>
+            <p class="lede">@_agent.Goal</p>
+            <p class="muted">@_agent.Id · @_agent.Role · workspace <code>@_agent.WorkspaceRoot</code></p>
+        </div>
+        <div class="actions">
+            <span class="pill status-@((_status?.Status ?? _agent.Status).ToLowerInvariant())">@(_status?.Status ?? _agent.Status)</span>
+            @if ((_status?.Status ?? _agent.Status) is "Born" or "Stopped")
+            {
+                <button class="btn primary" @onclick="StartAsync">Start</button>
+            }
+            @if ((_status?.Status ?? _agent.Status) == "Running")
+            {
+                <button class="btn" @onclick="StopAsync">Stop</button>
+            }
+        </div>
+    </section>
+
+    <div class="grid-2">
+        <section class="panel">
+            <div class="panel-head">
+                <h2>Active plan</h2>
+                <span class="muted">@(_plan?.Title ?? "none")</span>
+            </div>
+            @if (_plan is null)
+            {
+                <p class="empty">No plan yet.</p>
+            }
+            else
+            {
+                <p class="muted">@_plan.Goal</p>
+                <ol class="steps">
+                    @foreach (var step in _plan.Steps)
+                    {
+                        <li class="step status-@step.Status.ToLowerInvariant()">
+                            <div class="step-head">
+                                <strong>#@step.Ordinal @step.Title</strong>
+                                <span class="pill status-@step.Status.ToLowerInvariant()">@step.Status</span>
+                                <span class="pill @step.DecisionClass.ToLowerInvariant()">@step.DecisionClass</span>
+                            </div>
+                            <p>@step.Description</p>
+                            @if (!string.IsNullOrWhiteSpace(step.ToolName))
+                            {
+                                <p class="tiny muted">tool: @step.ToolName</p>
+                            }
+                            @if (!string.IsNullOrWhiteSpace(step.ResultSummary))
+                            {
+                                <pre class="result">@step.ResultSummary</pre>
+                            }
+                        </li>
+                    }
+                </ol>
+            }
+        </section>
+
+        <section class="panel">
+            <div class="panel-head">
+                <h2>Confirmations</h2>
+                <span class="muted">@_confirmations.Count</span>
+            </div>
+            @if (_confirmations.Count == 0)
+            {
+                <p class="empty">None pending for this agent.</p>
+            }
+            else
+            {
+                <ul class="confirm-list">
+                    @foreach (var c in _confirmations)
+                    {
+                        <li>
+                            <div>
+                                <strong>@c.StepTitle</strong>
+                                <span class="pill @c.DecisionClass.ToLowerInvariant()">@c.DecisionClass</span>
+                                <p>@c.Description</p>
+                            </div>
+                            <div class="actions">
+                                <button class="btn primary" @onclick="() => DecideAsync(c.StepId, true)">Approve</button>
+                                <button class="btn" @onclick="() => DecideAsync(c.StepId, false)">Deny</button>
+                            </div>
+                        </li>
+                    }
+                </ul>
+            }
+        </section>
+    </div>
+
+    <section class="panel">
+        <div class="panel-head">
+            <h2>Action logs</h2>
+            <span class="muted">latest @_logs.Count</span>
+        </div>
+        @if (_logs.Count == 0)
+        {
+            <p class="empty">No logs yet.</p>
+        }
+        else
+        {
+            <div class="table-wrap">
+                <table>
+                    <thead>
+                        <tr>
+                            <th>When</th>
+                            <th>Category</th>
+                            <th>Message</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var log in _logs)
+                        {
+                            <tr>
+                                <td class="tiny">@log.CreatedAt.ToLocalTime().ToString("HH:mm:ss")</td>
+                                <td><span class="pill">@log.Category</span></td>
+                                <td>@log.Message</td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+    </section>
+
+    @if (_planSummaries.Count > 0)
+    {
+        <section class="panel">
+            <div class="panel-head">
+                <h2>Plan history</h2>
+            </div>
+            <ul class="plain-list">
+                @foreach (var p in _planSummaries)
+                {
+                    <li>
+                        <strong>@p.Title</strong>
+                        <span class="muted">· @p.StepCount steps · @p.CreatedAt.ToLocalTime().ToString("g") · @p.LatestStepStatus</span>
+                    </li>
+                }
+            </ul>
+        </section>
+    }
+}
+
+@code {
+    [Parameter] public Guid AgentId { get; set; }
+
+    private const int _pollSeconds = 3;
+    private AgentDto? _agent;
+    private AgentStatusDto? _status;
+    private PlanDto? _plan;
+    private List<ActionLogDto> _logs = [];
+    private List<PendingConfirmationDto> _confirmations = [];
+    private List<PlanSummaryDto> _planSummaries = [];
+    private string? _error;
+    private CancellationTokenSource? _cts;
+    private Task? _loop;
+
+    protected override Task OnParametersSetAsync()
+    {
+        _cts?.Cancel();
+        _cts?.Dispose();
+        _cts = new CancellationTokenSource();
+        _loop = PollLoopAsync(_cts.Token);
+        return Task.CompletedTask;
+    }
+
+    private async Task PollLoopAsync(CancellationToken cancellationToken)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(_pollSeconds));
+        await RefreshAsync(cancellationToken);
+        try
+        {
+            while (await timer.WaitForNextTickAsync(cancellationToken))
+            {
+                await RefreshAsync(cancellationToken);
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+    }
+
+    private async Task RefreshAsync(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var id = AgentId.ToString();
+            _agent = await Api.GetAgentAsync(id, cancellationToken);
+            if (_agent is null)
+            {
+                _error = "Agent not found.";
+                await InvokeAsync(StateHasChanged);
+                return;
+            }
+
+            _error = null;
+            _status = await Api.GetStatusAsync(id, cancellationToken);
+            _plan = await Api.GetActivePlanAsync(id, cancellationToken);
+            _logs = (await Api.GetLogsAsync(id, 80, cancellationToken)).ToList();
+            _confirmations = (await Api.ListConfirmationsAsync(AgentId, cancellationToken)).ToList();
+            _planSummaries = (await Api.ListPlansAsync(id, 8, cancellationToken)).ToList();
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _error = ex.Message;
+        }
+
+        await InvokeAsync(StateHasChanged);
+    }
+
+    private async Task DecideAsync(Guid stepId, bool approved)
+    {
+        await Api.ResolveConfirmationAsync(stepId, approved);
+        if (_cts is not null)
+        {
+            await RefreshAsync(_cts.Token);
+        }
+    }
+
+    private async Task StartAsync()
+    {
+        await Api.StartAgentAsync(AgentId.ToString());
+        if (_cts is not null)
+        {
+            await RefreshAsync(_cts.Token);
+        }
+    }
+
+    private async Task StopAsync()
+    {
+        await Api.StopAgentAsync(AgentId.ToString());
+        if (_cts is not null)
+        {
+            await RefreshAsync(_cts.Token);
+        }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (_cts is not null)
+        {
+            await _cts.CancelAsync();
+            _cts.Dispose();
+        }
+
+        if (_loop is not null)
+        {
+            try { await _loop; } catch (OperationCanceledException) { }
+        }
+    }
+}
